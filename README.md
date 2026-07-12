@@ -5,23 +5,51 @@ friendly / enemy, reinforced, timer) across temperate planets in Branch.
 
 ## 1. Get the planet list
 
+Regions to fetch are listed in `regions.json`:
+
+```json
+{
+    "output_dir": "data",
+    "planet_type": "Temperate",
+    "regions": [
+        "Branch"
+    ]
+}
+```
+
 ```bash
 pip install aiohttp
 python fetch_branch_planets.py
 ```
 
-This writes `branch_temperate_planets.csv`, which `app.py` reads for the
-system/planet dropdowns. Re-run it if you want another region, or if CCP
-adds/removes planets in Branch (rare, but wormhole-adjacent regions do
-occasionally shift). It fetches concurrently over public ESI endpoints
-(no auth needed) rather than parsing the full CCP SDE — fine for a
-one-off/occasional pull; if you outgrow it, moving to the SDE would remove
-the remaining per-planet ESI calls.
+With no `--region` flag, it reads `regions.json` and fetches every region
+listed there, writing one CSV per region into `output_dir` (default
+`data/`) — e.g. `data/branch_temperate_planets.csv`, which `app.py` reads
+for the system/planet dropdowns (see `PLANET_CSV_PATH` in `app.py` — it
+currently points at Branch only; adding a region to `regions.json` doesn't
+by itself surface it in the app). Add more entries to `regions.json` to
+pull additional regions later; each entry can be a plain region name or
+`{"name": "...", "planet_type": "..."}` to override the type filter for
+just that region.
 
-**Commit the resulting CSV to the repo.** Streamlit Community Cloud runs a
-fresh clone of the repo on every deploy, so the app can only see the
-planet list if it's checked in — running the fetch script locally and not
-committing the CSV will break the "Report / update a den" dropdowns.
+For a one-off pull outside the config (e.g. trying a region before adding
+it permanently), `--region` still works standalone and ignores
+`regions.json`:
+```bash
+python fetch_branch_planets.py --region "Vale of the Silent"
+```
+
+Re-run the relevant region if CCP adds/removes planets there (rare, but
+wormhole-adjacent regions do occasionally shift). Fetching is concurrent
+over public ESI endpoints (no auth needed) rather than parsing the full
+CCP SDE — fine for an occasional pull; if you outgrow it, moving to the
+SDE would remove the remaining per-planet ESI calls.
+
+**Commit the resulting CSVs in `data/` to the repo.** Streamlit Community
+Cloud runs a fresh clone of the repo on every deploy, so the app can only
+see the planet list if it's checked in — running the fetch script locally
+and not committing the CSV will break the "Report / update a den"
+dropdowns.
 
 ## 2. Get a free Postgres DB (Neon)
 

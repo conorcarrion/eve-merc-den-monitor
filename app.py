@@ -219,10 +219,13 @@ def login_gate():
 # App
 # ---------------------------------------------------------------------
 
+PLANET_CSV_PATH = "data/branch_temperate_planets.csv"
+
+
 @st.cache_data
 def load_planet_list():
-    # bundled CSV produced by fetch_branch_planets.py
-    return pd.read_csv("branch_temperate_planets.csv")
+    # bundled CSV produced by fetch_branch_planets.py (see regions.json)
+    return pd.read_csv(PLANET_CSV_PATH)
 
 
 def load_board(engine):
@@ -326,7 +329,7 @@ def main():
         planets_df = load_planet_list()
     except FileNotFoundError:
         st.error(
-            "branch_temperate_planets.csv not found. Run fetch_branch_planets.py "
+            f"{PLANET_CSV_PATH} not found. Run fetch_branch_planets.py "
             "and commit the CSV to the repo before deploying."
         )
         st.stop()
