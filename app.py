@@ -21,7 +21,9 @@ public alliance_id — it never calls a scoped ESI endpoint).
 """
 
 import datetime as dt
-import secrets
+import hashlib
+import hmac
+import time
 from base64 import b64encode
 from urllib.parse import urlencode
 
@@ -48,6 +50,7 @@ METADATA_URL = "https://login.eveonline.com/.well-known/oauth-authorization-serv
 # https://developers.eveonline.com/docs/services/sso/
 ACCEPTED_ISSUERS = ["login.eveonline.com", "https://login.eveonline.com"]
 UPCOMING_TIMER_WARNING = dt.timedelta(hours=2)
+STATE_TTL_SECONDS = 600  # time allowed to complete the SSO round trip
 
 
 @st.cache_resource
@@ -126,6 +129,39 @@ def check_alliance(character_id: int):
     return resp.json().get("alliance_id")
 
 
+def make_state() -> str:
+    """
+    HMAC-signed, self-verifying CSRF token for the OAuth 'state' param.
+
+    Streamlit doesn't reliably keep st.session_state alive across the full
+    browser round trip to login.eveonline.com and back — that navigation
+    tears down and re-establishes the websocket, and can land in a brand
+    new session, wiping anything stashed beforehand. So instead of
+    "store a random value, compare on return," the state is signed with
+    a timestamp: the callback can verify it originated from us (and is
+    still fresh) without needing to remember anything server-side.
+    Reuses EVE_SECRET_KEY as the HMAC key to avoid provisioning a second
+    secret purely for this — it never leaves the server either way.
+    """
+    ts = str(int(time.time()))
+    sig = hmac.new(SECRET_KEY.encode(), ts.encode(), hashlib.sha256).hexdigest()
+    return f"{ts}.{sig}"
+
+
+def verify_state(state) -> bool:
+    if not state or "." not in state:
+        return False
+    ts_str, sig = state.split(".", 1)
+    expected_sig = hmac.new(SECRET_KEY.encode(), ts_str.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected_sig):
+        return False
+    try:
+        ts = int(ts_str)
+    except ValueError:
+        return False
+    return abs(time.time() - ts) <= STATE_TTL_SECONDS
+
+
 def build_auth_link(state: str) -> str:
     params = {
         "response_type": "code",
@@ -143,14 +179,12 @@ def login_gate():
     query_params = st.query_params
 
     if "code" in query_params and "character_name" not in st.session_state:
-        expected_state = st.session_state.get("oauth_state")
-        returned_state = query_params.get("state")
-        if not expected_state or returned_state != expected_state:
+        if not verify_state(query_params.get("state")):
             st.error(
-                "Login failed: state parameter mismatch (possible CSRF attempt, "
-                "or your browser session expired mid-login). Please try logging in again."
+                "Login failed: state parameter invalid or expired (possible CSRF "
+                f"attempt, or the login took longer than {STATE_TTL_SECONDS // 60} minutes). "
+                "Please try logging in again."
             )
-            st.session_state.pop("oauth_state", None)
             st.query_params.clear()
             st.stop()
 
@@ -174,13 +208,10 @@ def login_gate():
 
         st.session_state["character_name"] = char_name
         st.session_state["character_id"] = char_id
-        st.session_state.pop("oauth_state", None)
         st.query_params.clear()
 
     if "character_name" not in st.session_state:
-        state = secrets.token_urlsafe(24)
-        st.session_state["oauth_state"] = state
-        st.markdown(f"[**Log in with EVE Online SSO**]({build_auth_link(state)})")
+        st.markdown(f"[**Log in with EVE Online SSO**]({build_auth_link(make_state())})")
         st.stop()
 
 

@@ -90,20 +90,17 @@ in the UI, by design, to keep this a single simple page).
   CCP has used either), and `sub` parsed as `CHARACTER:EVE:<id>`. CCP has
   changed SSO details before — if login fails with a claims/audience error,
   check https://developers.eveonline.com/docs/services/sso/ for the latest.
-- **OAuth `state` / CSRF check — flagged assumption:** the login flow now
-  generates a random `state`, stores it in `st.session_state` before
-  redirecting to EVE SSO, and verifies it matches on callback. This relies
-  on Streamlit preserving `st.session_state` across the round trip to
-  `login.eveonline.com` and back (the app already relied on this pre-existing
-  behavior to remember `character_name` after login — the state check just
-  adds a check on top of the same mechanism). In the normal case this holds
-  because the browser reconnects to the same Streamlit session. If your
-  deployment ever sits behind something that forces a new session on that
-  redirect (e.g. certain proxy/load-balancer setups), the state check would
-  fail closed and users would see a "please try again" error rather than a
-  silent security hole — but it hasn't been tested against a real deployment,
-  since that requires live SSO credentials. Test this once you have a
-  registered app and a deployed URL.
+- **OAuth `state` / CSRF check:** originally implemented by stashing a
+  random `state` in `st.session_state` before redirecting to EVE SSO and
+  comparing on callback. That failed in practice on Streamlit Community
+  Cloud — the full-page navigation to `login.eveonline.com` and back tears
+  down and re-establishes the websocket, landing in a new session, so
+  `st.session_state` set before the redirect was gone by the time the
+  callback ran ("state parameter mismatch" on every login). Fixed by making
+  `state` self-verifying instead of session-stored: it's an HMAC-signed
+  timestamp (`make_state`/`verify_state` in `app.py`), checked against
+  `EVE_SECRET_KEY` and a 10-minute freshness window on callback, with no
+  server-side memory required between the redirect and the return.
 - This checks alliance only, not corp — fine for "alliance members," but
   if you want corp-level gating instead, swap `alliance_id` for
   `corporation_id` in `check_alliance`.
