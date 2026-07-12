@@ -58,6 +58,12 @@ STATE_TTL_SECONDS = 600  # time allowed to complete the SSO round trip
 STATUS_OPTIONS = ["Untaken", "Allied", "Hostile"]
 UNKNOWN_STATUS = "Unknown"  # board placeholder for planets with no report yet
 TIMER_INPUT_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M")
+# 00d00h00m00s countdown, as shown in the client above a reinforced structure —
+# every unit optional, but at least one must be present
+RELATIVE_TIMER_RE = re.compile(
+    r"(?:(?P<days>\d+)d)?(?:(?P<hours>\d+)h)?(?:(?P<minutes>\d+)m)?(?:(?P<seconds>\d+)s)?",
+    re.IGNORECASE,
+)
 
 COLUMN_LABELS = {
     "system_name": "System",
@@ -69,8 +75,51 @@ COLUMN_LABELS = {
     "updated_by": "Updated By",
 }
 
+ROMAN_NUMERAL_RE = re.compile(r"[IVXLCDM]+", re.IGNORECASE)
+ROMAN_VALUES = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+
+TIME_LEFT_LOW_STYLE = "background-color: #f2c744; color: black"       # < 2h left, still counting down
+TIME_LEFT_VULNERABLE_STYLE = "background-color: #e8720c; color: white"  # timer has passed
+STATUS_STYLES = {
+    "Allied": "background-color: #1f5fa8; color: white",
+    "Hostile": "background-color: #a83232; color: white",
+}
+
+
+def roman_to_int(roman: str) -> int:
+    total, prev = 0, 0
+    for ch in reversed(roman.upper()):
+        value = ROMAN_VALUES.get(ch, 0)
+        total += -value if value < prev else value
+        prev = max(prev, value)
+    return total
+
+
+def planet_designation(system_name: str, planet_name: str) -> str:
+    """The bit of planet_name that isn't the system name, e.g. 'III'."""
+    suffix = planet_name[len(system_name):].strip() if planet_name.startswith(system_name) else planet_name
+    return suffix
+
+
+def planet_number(system_name: str, planet_name: str) -> int:
+    suffix = planet_designation(system_name, planet_name)
+    return roman_to_int(suffix) if ROMAN_NUMERAL_RE.fullmatch(suffix) else 0
+
+
+def format_planet_label(system_name: str, planet_name: str) -> str:
+    """'BKG-Q2 III' -> '3 - III' — the system is already shown separately,
+    and the number makes the dropdown sortable/scannable at a glance."""
+    suffix = planet_designation(system_name, planet_name)
+    if ROMAN_NUMERAL_RE.fullmatch(suffix):
+        return f"{roman_to_int(suffix)} - {suffix.upper()}"
+    return planet_name
+
 
 def display_frame(df):
+    df = df.copy()
+    df["planet_name"] = [
+        format_planet_label(s, p) for s, p in zip(df["system_name"], df["planet_name"])
+    ]
     return df[list(COLUMN_LABELS.keys())].rename(columns=COLUMN_LABELS)
 
 
@@ -297,14 +346,28 @@ def load_board(engine):
         """), conn)
 
 
-def parse_timer_end(value: str):
-    """Parse an absolute EVE/UTC timestamp like '2026-07-12 16:49:20'."""
+def parse_relative_timer(value: str, now: dt.datetime):
+    """'1d2h30m' / '00d00h00m00s' -> now + that duration, or None."""
+    match = RELATIVE_TIMER_RE.fullmatch(value)
+    if not match or not any(match.groups()):
+        return None
+    parts = {k: int(v) for k, v in match.groupdict().items() if v is not None}
+    return now + dt.timedelta(
+        days=parts.get("days", 0), hours=parts.get("hours", 0),
+        minutes=parts.get("minutes", 0), seconds=parts.get("seconds", 0),
+    )
+
+
+def parse_timer_end(value: str, now: dt.datetime):
+    """Accepts either an absolute EVE/UTC timestamp ('2026-07-12 16:49:20')
+    or a countdown ('00d00h00m00s', seconds optional) — whatever's shown
+    above the structure when it reinforces, no head math required."""
     for fmt in TIMER_INPUT_FORMATS:
         try:
             return dt.datetime.strptime(value, fmt).replace(tzinfo=dt.timezone.utc)
         except ValueError:
             continue
-    return None
+    return parse_relative_timer(value, now)
 
 
 def format_time_left(timer_end, now):
@@ -319,6 +382,14 @@ def format_time_left(timer_end, now):
     return str(delta).split(".")[0]
 
 
+def highlight_status(row):
+    styles = [""] * len(row)
+    color = STATUS_STYLES.get(row["Status"])
+    if color:
+        styles[row.index.get_loc("Status")] = color
+    return styles
+
+
 def render_upcoming_timers(df, now):
     st.header("Upcoming timers")
     upcoming = df[df["reinforced"] & df["timer_end"].notna()].copy()
@@ -330,15 +401,26 @@ def render_upcoming_timers(df, now):
 
     display = display_frame(upcoming)
 
-    def highlight_urgent(row):
+    def highlight_time_left(row):
+        styles = [""] * len(row)
         end = pd.Timestamp(row["Reinforcement Timer"])
         if end.tzinfo is None:
             end = end.tz_localize("UTC")
         seconds_left = (end.to_pydatetime() - now).total_seconds()
-        style = "background-color: #7a1f1f; color: white" if 0 < seconds_left < UPCOMING_TIMER_WARNING.total_seconds() else ""
-        return [style] * len(row)
+        if seconds_left <= 0:
+            style = TIME_LEFT_VULNERABLE_STYLE
+        elif seconds_left < UPCOMING_TIMER_WARNING.total_seconds():
+            style = TIME_LEFT_LOW_STYLE
+        else:
+            style = ""
+        if style:
+            styles[row.index.get_loc("Time Left")] = style
+        return styles
 
-    st.dataframe(display.style.apply(highlight_urgent, axis=1), use_container_width=True)
+    st.dataframe(
+        display.style.apply(highlight_time_left, axis=1).apply(highlight_status, axis=1),
+        width="stretch",
+    )
 
 
 def render_resolve_outcome(engine, reports_df, now):
@@ -354,12 +436,17 @@ def render_resolve_outcome(engine, reports_df, now):
         st.caption("No dens have hit Vulnerable yet.")
         return
 
-    options = [f"{r.system_name} / {r.planet_name}" for r in vulnerable.itertuples()]
-    choice = st.selectbox("Den", options, key="resolve_choice")
+    vulnerable = vulnerable.copy()
+    vulnerable["_label"] = [
+        f"{s} / {format_planet_label(s, p)}"
+        for s, p in zip(vulnerable["system_name"], vulnerable["planet_name"])
+    ]
+    choice = st.selectbox("Den", vulnerable["_label"].tolist(), key="resolve_choice")
     outcome = st.selectbox("Outcome", STATUS_OPTIONS, key="resolve_outcome")
 
     if st.button("Save outcome"):
-        system_name, planet_name = [s.strip() for s in choice.split("/", 1)]
+        chosen = vulnerable.loc[vulnerable["_label"] == choice].iloc[0]
+        system_name, planet_name = chosen["system_name"], chosen["planet_name"]
         try:
             with engine.begin() as conn:
                 conn.execute(
@@ -384,6 +471,7 @@ def render_resolve_outcome(engine, reports_df, now):
 def main():
     login_gate()
     engine = get_engine()
+    now = dt.datetime.now(dt.timezone.utc)
 
     try:
         init_db(engine)
@@ -410,7 +498,7 @@ def main():
     for r in regions:
         is_selected = r["name"] == st.session_state["selected_region"]
         if st.sidebar.button(
-            r["name"], key=f"region_{r['name']}", use_container_width=True,
+            r["name"], key=f"region_{r['name']}", width="stretch",
             type="primary" if is_selected else "secondary",
         ):
             st.session_state["selected_region"] = r["name"]
@@ -433,14 +521,22 @@ def main():
     col1, col2 = st.columns(2)
     with col1:
         system = st.selectbox("System", systems)
-        planet_options = planets_df[planets_df["system_name"] == system]["planet_name"].tolist()
-        planet = st.selectbox("Planet", planet_options)
+        planet_rows = planets_df[planets_df["system_name"] == system].copy()
+        planet_rows["_number"] = [
+            planet_number(system, p) for p in planet_rows["planet_name"]
+        ]
+        planet_rows["_label"] = [
+            format_planet_label(system, p) for p in planet_rows["planet_name"]
+        ]
+        planet_rows = planet_rows.sort_values("_number")
+        planet_label = st.selectbox("Planet", planet_rows["_label"].tolist())
+        planet = planet_rows.loc[planet_rows["_label"] == planet_label, "planet_name"].iloc[0]
         status = st.selectbox("Status", STATUS_OPTIONS)
     with col2:
         reinforced = st.checkbox("Reinforced")
         timer_input = st.text_input(
             "Reinforcement ends (EVE/UTC time, optional)",
-            placeholder="2026-07-12 16:49:20",
+            placeholder="2026-07-12 16:49:20  or  00d00h00m",
         )
         notes = st.text_input("Notes (optional)")
 
@@ -448,11 +544,12 @@ def main():
         timer_end = None
         timer_input = timer_input.strip()
         if timer_input:
-            timer_end = parse_timer_end(timer_input)
+            timer_end = parse_timer_end(timer_input, now)
             if timer_end is None:
                 st.error(
-                    "Reinforcement time must look like 2026-07-12 16:49:20 "
-                    "(EVE/UTC time, YYYY-MM-DD HH:MM:SS)."
+                    "Reinforcement time must be either an absolute EVE/UTC "
+                    "timestamp like 2026-07-12 16:49:20, or a countdown like "
+                    "00d00h00m (seconds optional)."
                 )
                 st.stop()
         try:
@@ -498,7 +595,6 @@ def main():
     board["notes"] = board["notes"].fillna("")
     board["updated_by"] = board["updated_by"].fillna("")
 
-    now = dt.datetime.now(dt.timezone.utc)
     board["time_left"] = board["timer_end"].apply(lambda t: format_time_left(t, now))
     board = board.sort_values(by="timer_end", na_position="last")
 
@@ -506,7 +602,7 @@ def main():
     render_resolve_outcome(engine, reports_df, now)
 
     st.header("Current board")
-    st.dataframe(display_frame(board), use_container_width=True)
+    st.dataframe(display_frame(board).style.apply(highlight_status, axis=1), width="stretch")
 
 
 if __name__ == "__main__":

@@ -110,26 +110,43 @@ Returns `{"alliances": [{"id": ..., "name": "..."}]}` — that `id` is your
 
 ## Reporting a den
 
-Reinforcement end time is entered as an absolute EVE/UTC timestamp, e.g.
-`2026-07-12 16:49:20` (seconds optional). It's parsed as UTC — EVE time —
-regardless of the reporting character's local timezone. Leave it blank if
-the den isn't reinforced or the timer isn't known yet.
+The `Planet` dropdown shows a number alongside the roman numeral (e.g.
+`3 - III`) and is sorted by that number, instead of listing raw ESI planet
+names in whatever order they happened to be in — easier to scan and pick
+the right one at a glance. The System is already a separate field, so the
+system name isn't repeated in the planet label; the same `N - ROMAN` format
+is used everywhere else a planet is listed (board, resolve dropdown).
+
+Reinforcement end time accepts two formats:
+- an absolute EVE/UTC timestamp, e.g. `2026-07-12 16:49:20` (seconds optional)
+- a countdown, e.g. `00d00h00m` or `1d2h30m` (seconds optional) — whatever's
+  shown above the structure the moment it reinforces, so you can enter that
+  directly instead of doing the date math yourself
+
+Both are parsed as UTC — EVE time — regardless of the reporting character's
+local timezone; a countdown is measured from the moment you hit save.
+Leave the field blank if the den isn't reinforced or the timer isn't known
+yet.
 
 Status options are `Untaken`, `Allied`, `Hostile` — plus the board-only
 `Unknown` placeholder for planets nobody has reported on. The first time
 the app starts after this change, any existing rows using the old
 `active`/`friendly`/`enemy` values are automatically renamed to
 `Untaken`/`Allied`/`Hostile` (`init_db` in `app.py`) so the board doesn't
-end up with a mix of old and new terminology.
+end up with a mix of old and new terminology. `Allied` rows are highlighted
+blue and `Hostile` rows red on the board, wherever Status is shown.
 
 ## Resolving a reinforcement timer
 
 Once a den's `Reinforcement Timer` passes, `Time Left` reads `Vulnerable`
-instead of a countdown. The "Resolve Reinforcement Outcome" section (above
-the current board) only lists dens that have hit Vulnerable — pick the den
-and an outcome (`Allied` / `Hostile` / `Untaken`), and it inserts a new
-report with that status and the timer cleared, so the board reflects what
-actually happened once the den came out of reinforcement.
+instead of a countdown. In the "Upcoming timers" table, the `Time Left`
+cell itself (not the whole row) is highlighted yellow once under 2 hours
+remaining, and orange once it hits `Vulnerable`. The "Resolve Reinforcement
+Outcome" section (above the current board) only lists dens that have hit
+Vulnerable — pick the den and an outcome (`Allied` / `Hostile` / `Untaken`),
+and it inserts a new report with that status and the timer cleared, so the
+board reflects what actually happened once the den came out of
+reinforcement.
 
 Dens are never deleted or overwritten in place — every report/outcome is a
 new row (`dens` table is insert-only, for audit). "Current board" shows
