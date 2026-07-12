@@ -45,9 +45,18 @@ committing the CSV will break the "Report / update a den" dropdowns.
 
 ## 4. Find your alliance ID
 
+CCP retired the old public `/search/` endpoint. Resolve the name via
+`/universe/ids/` instead (same endpoint `fetch_branch_planets.py` uses for
+region names) — exact name match, case-insensitive:
+
+```bash
+curl -s "https://esi.evetech.net/latest/universe/ids/" \
+  -X POST -H "Content-Type: application/json" \
+  -d '["YOUR_ALLIANCE_NAME"]'
 ```
-https://esi.evetech.net/latest/search/?categories=alliance&search=YOUR_ALLIANCE_NAME&strict=true
-```
+
+Returns `{"alliances": [{"id": ..., "name": "..."}]}` — that `id` is your
+`ALLIANCE_ID`. (For Sigma Grindset, it's `99011223`.)
 
 ## 5. Deploy to Streamlit Community Cloud
 
