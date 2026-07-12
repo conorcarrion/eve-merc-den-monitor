@@ -1,7 +1,11 @@
-# Branch Den Tracker
+# Mercenary Den Tracker
 
-Shared, alliance-gated board for tracking mercenary den status (active /
-friendly / enemy, reinforced, timer) across temperate planets in Branch.
+Shared, alliance-gated board for tracking mercenary den status (Untaken /
+Allied / Hostile, reinforced, timer) across temperate planets. One board
+per region listed in `regions.json`, switched with buttons in the sidebar.
+Each board always lists every temperate planet in that region — ones with
+no report yet show as `Unknown`, so gaps in coverage are visible rather
+than just missing from the table.
 
 ## 1. Get the planet list
 
@@ -24,13 +28,20 @@ python fetch_branch_planets.py
 
 With no `--region` flag, it reads `regions.json` and fetches every region
 listed there, writing one CSV per region into `output_dir` (default
-`data/`) — e.g. `data/branch_temperate_planets.csv`, which `app.py` reads
-for the system/planet dropdowns (see `PLANET_CSV_PATH` in `app.py` — it
-currently points at Branch only; adding a region to `regions.json` doesn't
-by itself surface it in the app). Add more entries to `regions.json` to
-pull additional regions later; each entry can be a plain region name or
-`{"name": "...", "planet_type": "..."}` to override the type filter for
-just that region.
+`data/`) — e.g. `data/branch_temperate_planets.csv`. `app.py` reads the
+same `regions.json` (`load_regions()`) to build the sidebar's region
+buttons and work out each region's CSV path, so the two stay in sync
+automatically: add an entry to `regions.json`, run the fetch script,
+commit the new CSV, and reboot the app (redeploy) — the region shows up
+as a sidebar button with its own board, no code changes needed. Each
+entry can be a plain region name or `{"name": "...", "planet_type": "..."}`
+to override the type filter for just that region.
+
+Reports aren't tagged with a region in the database — EVE system names are
+globally unique, so each board is scoped by matching `system_name` against
+that region's planet list. This means two regions can never accidentally
+share a system, but it does mean planet names must stay consistent between
+`regions.json`'s config and whatever CSV is actually sitting at that path.
 
 For a one-off pull outside the config (e.g. trying a region before adding
 it permanently), `--region` still works standalone and ignores
@@ -97,15 +108,51 @@ Returns `{"alliances": [{"id": ..., "name": "..."}]}` — that `id` is your
 4. Deploy. Log in via the EVE SSO link on first load — only characters in
    the whitelisted alliance ID will get past the gate.
 
-## Resolving a den
+## Reporting a den
 
-Dens are never deleted or overwritten in place — every report/resolve is a
+Reinforcement end time is entered as an absolute EVE/UTC timestamp, e.g.
+`2026-07-12 16:49:20` (seconds optional). It's parsed as UTC — EVE time —
+regardless of the reporting character's local timezone. Leave it blank if
+the den isn't reinforced or the timer isn't known yet.
+
+Status options are `Untaken`, `Allied`, `Hostile` — plus the board-only
+`Unknown` placeholder for planets nobody has reported on. The first time
+the app starts after this change, any existing rows using the old
+`active`/`friendly`/`enemy` values are automatically renamed to
+`Untaken`/`Allied`/`Hostile` (`init_db` in `app.py`) so the board doesn't
+end up with a mix of old and new terminology.
+
+## Resolving a reinforcement timer
+
+Once a den's `Reinforcement Timer` passes, `Time Left` reads `Vulnerable`
+instead of a countdown. The "Resolve Reinforcement Outcome" section (above
+the current board) only lists dens that have hit Vulnerable — pick the den
+and an outcome (`Allied` / `Hostile` / `Untaken`), and it inserts a new
+report with that status and the timer cleared, so the board reflects what
+actually happened once the den came out of reinforcement.
+
+Dens are never deleted or overwritten in place — every report/outcome is a
 new row (`dens` table is insert-only, for audit). "Current board" shows
-only the latest report per system+planet where `resolved_at IS NULL`. Use
-the "Resolve a den" section once a den is destroyed or flips sides to
-insert a closing row and drop it off the board; the full history stays in
-the table (query the DB directly if you need it — there's no history view
+only the latest report per system+planet where `resolved_at IS NULL`
+(that column still exists for a future hard-remove-from-board action, but
+nothing in the UI sets it right now). The full history stays in the table
+either way (query the DB directly if you need it — there's no history view
 in the UI, by design, to keep this a single simple page).
+
+## Rebooting / redeploying doesn't lose data
+
+Den reports live in Neon Postgres, not in the Streamlit app process —
+redeploying the app (new commit, manual reboot, Streamlit Cloud recycling
+an idle container) only resets things held in memory: everyone's logged-in
+session (they'll need to click through EVE SSO again) and any form field
+someone was mid-typing. The `dens` table itself is untouched. Every schema
+change this app makes on startup (`init_db`) is deliberately non-destructive
+— `CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`, and `UPDATE`s
+that only rewrite text values — so redeploying to pick up a new region or a
+code change is safe to do at any time. Adding a region to `regions.json`
+specifically requires a reboot to show up (`load_regions()`/`load_planet_list()`
+are cached for the process lifetime) — that's expected, not a sign
+something's wrong.
 
 ## Notes / things to sanity-check
 
