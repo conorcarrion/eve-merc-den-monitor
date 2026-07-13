@@ -53,7 +53,12 @@ METADATA_URL = "https://login.eveonline.com/.well-known/oauth-authorization-serv
 # https://developers.eveonline.com/docs/services/sso/
 ACCEPTED_ISSUERS = ["login.eveonline.com", "https://login.eveonline.com"]
 UPCOMING_TIMER_WARNING = dt.timedelta(hours=2)
-STATE_TTL_SECONDS = 600  # time allowed to complete the SSO round trip
+STATE_TTL_SECONDS = 1800  # time allowed to complete the SSO round trip — generous
+# because it has to cover human login time (password, 2FA) plus a possible
+# Streamlit Community Cloud cold-start/wake-up if the app was idle. This
+# doesn't meaningfully widen any CSRF/replay window: EVE's authorization
+# `code` is separately short-lived and single-use, so it's still the actual
+# limiting factor, not this timestamp.
 
 STATUS_OPTIONS = ["Untaken", "Allied", "Hostile"]
 UNKNOWN_STATUS = "Unknown"  # board placeholder for planets with no report yet
@@ -227,18 +232,23 @@ def make_state() -> str:
     return f"{ts}.{sig}"
 
 
-def verify_state(state) -> bool:
-    if not state or "." not in state:
-        return False
+def verify_state(state):
+    """None if valid, else a short reason — distinguishing 'expired' from
+    'bad signature' is the whole point: they point at different bugs, and
+    the old boolean-only version couldn't tell us which one was happening."""
+    if not state or not isinstance(state, str) or "." not in state:
+        return "malformed"
     ts_str, sig = state.split(".", 1)
     expected_sig = hmac.new(SECRET_KEY.encode(), ts_str.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(sig, expected_sig):
-        return False
+        return "bad_signature"
     try:
         ts = int(ts_str)
     except ValueError:
-        return False
-    return abs(time.time() - ts) <= STATE_TTL_SECONDS
+        return "malformed"
+    if abs(time.time() - ts) > STATE_TTL_SECONDS:
+        return "expired"
+    return None
 
 
 def build_auth_link(state: str) -> str:
@@ -257,11 +267,14 @@ def login_gate():
     query_params = st.query_params
 
     if "code" in query_params and "character_name" not in st.session_state:
-        if not verify_state(query_params.get("state")):
+        state_error = verify_state(query_params.get("state"))
+        if state_error:
             st.error(
-                "Login failed: state parameter invalid or expired (possible CSRF "
-                f"attempt, or the login took longer than {STATE_TTL_SECONDS // 60} minutes). "
-                "Please try logging in again."
+                f"Login failed: state check failed ({state_error}). "
+                "Please try logging in again — and if you see this on a "
+                "fast, straight-through login too, tell the app admin the "
+                "reason shown in parentheses above, it points at a "
+                "different bug than a slow/expired login would."
             )
             st.query_params.clear()
             st.stop()
@@ -291,6 +304,12 @@ def login_gate():
     if "character_name" not in st.session_state:
         st.title("Mercenary Den Tracker")
         st.markdown(f"[**Log in with EVE Online SSO**]({build_auth_link(make_state())})")
+        st.caption(
+            f"This app is configured for **{CALLBACK_URL}** — if that doesn't match "
+            "your browser's address bar, close this tab and open the correct one. "
+            "A different deployment (old preview link, bookmark, etc.) has its own "
+            "secrets and login state won't carry over between them."
+        )
         st.stop()
 
 
