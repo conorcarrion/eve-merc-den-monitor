@@ -121,11 +121,24 @@ def format_planet_label(system_name: str, planet_name: str) -> str:
     return planet_name
 
 
+def format_timer_end(timer_end):
+    """Drop seconds/microseconds/UTC-offset noise; keep the date, since a
+    reinforcement timer commonly runs past midnight and 'HH:MM' alone
+    would be ambiguous about which day it lands on."""
+    if pd.isnull(timer_end):
+        return ""
+    ts = pd.Timestamp(timer_end)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    return ts.strftime("%Y-%m-%d %H:%M")
+
+
 def display_frame(df):
     df = df.copy()
     df["planet_name"] = [
         format_planet_label(s, p) for s, p in zip(df["system_name"], df["planet_name"])
     ]
+    df["timer_end"] = df["timer_end"].apply(format_timer_end)
     return df[list(COLUMN_LABELS.keys())].rename(columns=COLUMN_LABELS)
 
 
@@ -269,13 +282,7 @@ def login_gate():
     if "code" in query_params and "character_name" not in st.session_state:
         state_error = verify_state(query_params.get("state"))
         if state_error:
-            st.error(
-                f"Login failed: state check failed ({state_error}). "
-                "Please try logging in again — and if you see this on a "
-                "fast, straight-through login too, tell the app admin the "
-                "reason shown in parentheses above, it points at a "
-                "different bug than a slow/expired login would."
-            )
+            st.error(f"Login failed: state check failed ({state_error}). Please refresh the page and try again.")
             st.query_params.clear()
             st.stop()
 
@@ -304,12 +311,6 @@ def login_gate():
     if "character_name" not in st.session_state:
         st.title("Mercenary Den Tracker")
         st.markdown(f"[**Log in with EVE Online SSO**]({build_auth_link(make_state())})")
-        st.caption(
-            f"This app is configured for **{CALLBACK_URL}** — if that doesn't match "
-            "your browser's address bar, close this tab and open the correct one. "
-            "A different deployment (old preview link, bookmark, etc.) has its own "
-            "secrets and login state won't carry over between them."
-        )
         st.stop()
 
 
@@ -412,10 +413,12 @@ def format_time_left(timer_end, now):
     end = pd.Timestamp(timer_end)
     if end.tzinfo is None:
         end = end.tz_localize("UTC")
-    delta = end.to_pydatetime() - now
-    if delta.total_seconds() <= 0:
+    seconds_left = (end.to_pydatetime() - now).total_seconds()
+    if seconds_left <= 0:
         return "Vulnerable"
-    return str(delta).split(".")[0]
+    total_minutes = int(seconds_left // 60)
+    hours, minutes = divmod(total_minutes, 60)
+    return f"{hours:02d}h{minutes:02d}m"
 
 
 def highlight_status(row):
