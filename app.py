@@ -69,6 +69,7 @@ COLUMN_LABELS = {
     "system_name": "System",
     "planet_name": "Planet",
     "status": "Status",
+    "owner": "Owner",
     "timer_end": "Reinforcement Timer",
     "time_left": "Time Left",
     "notes": "Notes",
@@ -139,13 +140,15 @@ def init_db(engine):
                 reinforced BOOLEAN NOT NULL DEFAULT FALSE,
                 timer_end TIMESTAMPTZ,
                 notes TEXT,
+                owner TEXT,
                 updated_by TEXT,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 resolved_at TIMESTAMPTZ
             )
         """))
-        # idempotent for DBs created before resolved_at existed
+        # idempotent for DBs created before these columns existed
         conn.execute(text("ALTER TABLE dens ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ"))
+        conn.execute(text("ALTER TABLE dens ADD COLUMN IF NOT EXISTS owner TEXT"))
         # one-time vocabulary rename (old status set -> Untaken/Allied/Hostile);
         # each UPDATE matches zero rows once the rename has happened, so this
         # is a cheap no-op on every startup after the first
@@ -339,11 +342,25 @@ def load_board(engine):
         return pd.read_sql(text("""
             SELECT DISTINCT ON (system_name, planet_name)
                 system_name, planet_name, status, reinforced, timer_end,
-                notes, updated_by, updated_at
+                notes, owner, updated_by, updated_at
             FROM dens
             WHERE resolved_at IS NULL
             ORDER BY system_name, planet_name, updated_at DESC
         """), conn)
+
+
+def current_report(reports_df, system_name, planet_name):
+    """The existing row for this den, if any — used to carry forward
+    fields an action isn't explicitly changing (e.g. owner), since every
+    insert is a full snapshot and DISTINCT ON only looks at the latest row."""
+    match = reports_df[
+        (reports_df["system_name"] == system_name) & (reports_df["planet_name"] == planet_name)
+    ]
+    return None if match.empty else match.iloc[0]
+
+
+def blank_if_na(value):
+    return "" if pd.isna(value) else value
 
 
 def parse_relative_timer(value: str, now: dt.datetime):
@@ -452,19 +469,65 @@ def render_resolve_outcome(engine, reports_df, now):
                 conn.execute(
                     text("""
                         INSERT INTO dens (system_name, planet_name, status, reinforced,
-                                           timer_end, notes, updated_by)
+                                           timer_end, notes, owner, updated_by)
                         VALUES (:system_name, :planet_name, :status, FALSE,
-                                NULL, 'Reinforcement resolved', :updated_by)
+                                NULL, 'Reinforcement resolved', :owner, :updated_by)
                     """),
                     {
                         "system_name": system_name, "planet_name": planet_name,
-                        "status": outcome, "updated_by": st.session_state["character_name"],
+                        "status": outcome, "owner": blank_if_na(chosen["owner"]),
+                        "updated_by": st.session_state["character_name"],
                     },
                 )
         except SQLAlchemyError as e:
             st.error(f"Could not save to the database: {e}")
             return
         st.success("Outcome saved.")
+        st.rerun()
+
+
+def render_owner_update(engine, reports_df):
+    st.header("Update Den Owner")
+
+    if reports_df.empty:
+        st.caption("No reported dens yet.")
+        return
+
+    options = reports_df.copy()
+    options["_label"] = [
+        f"{s} / {format_planet_label(s, p)}"
+        for s, p in zip(options["system_name"], options["planet_name"])
+    ]
+    choice = st.selectbox("Den", options["_label"].tolist(), key="owner_den_choice")
+    chosen = options.loc[options["_label"] == choice].iloc[0]
+    # key includes the den so switching dens shows *that* den's owner —
+    # a static key would keep echoing back whatever was last typed, since
+    # Streamlit ignores `value` for a key that already has session state
+    owner_input = st.text_input("Owner", value=blank_if_na(chosen["owner"]), key=f"owner_input_{choice}")
+
+    if st.button("Save owner"):
+        timer_end = None if pd.isna(chosen["timer_end"]) else chosen["timer_end"].to_pydatetime()
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("""
+                        INSERT INTO dens (system_name, planet_name, status, reinforced,
+                                           timer_end, notes, owner, updated_by)
+                        VALUES (:system_name, :planet_name, :status, :reinforced,
+                                :timer_end, :notes, :owner, :updated_by)
+                    """),
+                    {
+                        "system_name": chosen["system_name"], "planet_name": chosen["planet_name"],
+                        "status": chosen["status"], "reinforced": bool(chosen["reinforced"]),
+                        "timer_end": timer_end, "notes": blank_if_na(chosen["notes"]),
+                        "owner": owner_input.strip(),
+                        "updated_by": st.session_state["character_name"],
+                    },
+                )
+        except SQLAlchemyError as e:
+            st.error(f"Could not save to the database: {e}")
+            return
+        st.success("Owner updated.")
         st.rerun()
 
 
@@ -517,6 +580,18 @@ def main():
         st.stop()
     systems = sorted(planets_df["system_name"].unique())
 
+    try:
+        reports_df = load_board(engine)
+    except SQLAlchemyError as e:
+        st.error(f"Could not load the board from the database: {e}")
+        st.stop()
+
+    # the dens table has no region column — EVE system names are globally
+    # unique, so scoping to this region's systems is enough to keep other
+    # regions' reports (once there are any) off this board
+    region_systems = set(planets_df["system_name"])
+    reports_df = reports_df[reports_df["system_name"].isin(region_systems)]
+
     st.header("Report / update a den")
     col1, col2 = st.columns(2)
     with col1:
@@ -552,19 +627,24 @@ def main():
                     "00d00h00m (seconds optional)."
                 )
                 st.stop()
+        # this form has no Owner field of its own — carry the existing
+        # owner forward so filing a status update doesn't blank it out
+        existing = current_report(reports_df, system, planet)
+        owner = blank_if_na(existing["owner"]) if existing is not None else ""
         try:
             with engine.begin() as conn:
                 conn.execute(
                     text("""
                         INSERT INTO dens (system_name, planet_name, status, reinforced,
-                                           timer_end, notes, updated_by)
+                                           timer_end, notes, owner, updated_by)
                         VALUES (:system_name, :planet_name, :status, :reinforced,
-                                :timer_end, :notes, :updated_by)
+                                :timer_end, :notes, :owner, :updated_by)
                     """),
                     {
                         "system_name": system, "planet_name": planet, "status": status,
                         "reinforced": reinforced, "timer_end": timer_end,
-                        "notes": notes, "updated_by": st.session_state["character_name"],
+                        "notes": notes, "owner": owner,
+                        "updated_by": st.session_state["character_name"],
                     },
                 )
         except SQLAlchemyError as e:
@@ -572,18 +652,6 @@ def main():
             st.stop()
         st.success("Saved.")
         st.rerun()
-
-    try:
-        reports_df = load_board(engine)
-    except SQLAlchemyError as e:
-        st.error(f"Could not load the board from the database: {e}")
-        st.stop()
-
-    # the dens table has no region column — EVE system names are globally
-    # unique, so scoping to this region's systems is enough to keep other
-    # regions' reports (once there are any) off this board
-    region_systems = set(planets_df["system_name"])
-    reports_df = reports_df[reports_df["system_name"].isin(region_systems)]
 
     # every temperate planet in the region shows up on the board, even if
     # nobody has reported on it yet — that gap is the point, so oversight
@@ -593,6 +661,7 @@ def main():
     board["status"] = board["status"].fillna(UNKNOWN_STATUS)
     board["reinforced"] = board["reinforced"].fillna(False)
     board["notes"] = board["notes"].fillna("")
+    board["owner"] = board["owner"].fillna("")
     board["updated_by"] = board["updated_by"].fillna("")
 
     board["time_left"] = board["timer_end"].apply(lambda t: format_time_left(t, now))
@@ -603,6 +672,8 @@ def main():
 
     st.header("Current board")
     st.dataframe(display_frame(board).style.apply(highlight_status, axis=1), width="stretch")
+
+    render_owner_update(engine, reports_df)
 
 
 if __name__ == "__main__":

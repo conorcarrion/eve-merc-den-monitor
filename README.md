@@ -156,6 +156,17 @@ nothing in the UI sets it right now). The full history stays in the table
 either way (query the DB directly if you need it — there's no history view
 in the UI, by design, to keep this a single simple page).
 
+## Updating a den's owner
+
+`Owner` is a free-text field (e.g. a corp or character name) tracked
+separately from `Status`. The "Update Den Owner" section at the bottom of
+the page lists every currently reported den — reinforced or not — so you
+can correct or set ownership without needing to file a full status report.
+Because every save is a fresh full-row insert (see above), the main report
+form and the outcome-resolve tool both carry the existing `Owner` value
+forward untouched when they save, rather than each one having its own
+Owner field and accidentally blanking it out.
+
 ## Rebooting / redeploying doesn't lose data
 
 Den reports live in Neon Postgres, not in the Streamlit app process —
