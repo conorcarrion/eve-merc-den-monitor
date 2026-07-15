@@ -311,14 +311,7 @@ def login_gate():
 
     if "character_name" not in st.session_state:
         st.title("Mercenary Den Tracker")
-        # target="_top" breaks out of any embedding frame (e.g. Streamlit
-        # Cloud's "manage app" dashboard preview) so the SSO round trip
-        # happens on the real top-level page, not trapped inside an iframe
-        st.markdown(
-            f'<a href="{build_auth_link(make_state())}" target="_top">'
-            f'<strong>Log in with EVE Online SSO</strong></a>',
-            unsafe_allow_html=True,
-        )
+        st.markdown(f"[**Log in with EVE Online SSO**]({build_auth_link(make_state())})")
         st.stop()
 
 
