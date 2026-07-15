@@ -60,7 +60,8 @@ STATE_TTL_SECONDS = 1800  # time allowed to complete the SSO round trip — gene
 # `code` is separately short-lived and single-use, so it's still the actual
 # limiting factor, not this timestamp.
 
-STATUS_OPTIONS = ["Untaken", "Allied", "Hostile"]
+UNTAKEN_STATUS = "Untaken"
+STATUS_OPTIONS = [UNTAKEN_STATUS, "Allied", "Hostile"]
 UNKNOWN_STATUS = "Unknown"  # board placeholder for planets with no report yet
 TIMER_INPUT_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M")
 # 00d00h00m00s countdown, as shown in the client above a reinforced structure —
@@ -436,6 +437,16 @@ def highlight_status(row):
     return styles
 
 
+def render_untaken_board(board):
+    st.header("Untaken Dens")
+    st.caption("Cleared out, but nobody's placed an Allied den here yet.")
+    untaken = board[board["status"] == UNTAKEN_STATUS]
+    if untaken.empty:
+        st.caption("None right now.")
+        return
+    st.dataframe(display_frame(untaken), width="stretch")
+
+
 def render_upcoming_timers(df, now):
     st.header("Upcoming timers")
     upcoming = df[df["reinforced"] & df["timer_end"].notna()].copy()
@@ -702,6 +713,7 @@ def main():
     st.header("Current board")
     st.dataframe(display_frame(board).style.apply(highlight_status, axis=1), width="stretch")
 
+    render_untaken_board(board)
     render_owner_update(engine, reports_df)
 
 

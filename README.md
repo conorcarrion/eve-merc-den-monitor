@@ -156,6 +156,12 @@ nothing in the UI sets it right now). The full history stays in the table
 either way (query the DB directly if you need it — there's no history view
 in the UI, by design, to keep this a single simple page).
 
+Right below the current board, "Untaken Dens" is a filtered view showing
+just the planets sitting at `Untaken` — cleared out (shot, reinforced,
+resolved) but with nothing Allied placed there yet. It's the same board
+data, just narrowed down to flag where there's an open opportunity to drop
+a den.
+
 ## Updating a den's owner
 
 `Owner` is a free-text field (e.g. a corp or character name) tracked
